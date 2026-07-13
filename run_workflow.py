@@ -16,9 +16,11 @@ SEARCH_PATHS = [
     BASE / "models" / "diffusion_models",
     BASE / "models" / "text_encoders",
     BASE / "models" / "vae",
+    BASE / "models" / "loras",
     BASE / "ComfyUI" / "models" / "diffusion_models",
     BASE / "ComfyUI" / "models" / "text_encoders",
     BASE / "ComfyUI" / "models" / "vae",
+    BASE / "ComfyUI" / "models" / "loras",
 ]
 
 def find_model_file(filename: str) -> Path | None:
@@ -94,20 +96,21 @@ def build_flux2_prompt(payload: dict) -> dict:
     prompt_text = prompt_text or payload.get("description") or payload.get("text") or ""
 
     settings = payload.get("settings", {})
-    width = settings.get("width", 768)
-    height = settings.get("height", 768)
+    width = settings.get("width", 512)
+    height = settings.get("height", 512)
     batch_size = settings.get("batch_size", 1)
-    steps = settings.get("steps", 20)
+    steps = settings.get("steps", 30)
     sampler_name = settings.get("sampler_name", "euler")
     seed = settings.get("seed", 1234)
-    guidance = settings.get("guidance", 3.5)
+    guidance = settings.get("guidance", 4.5)
 
     model_name = payload.get("model") or payload.get("unet_name") or "flux-2-klein-4b-fp8"
     model_name = normalize_model_name(model_name)
     if find_model_file(model_name) is None:
-        alt_name = model_name.lower().replace("flux-2-klein-4b-fp8", "flux2_dev_fp8mixed")
-        if find_model_file(alt_name) is not None:
-            model_name = alt_name
+        for alt in ("flux2_dev_fp8mixed", "flux2_dev_nvfp4"):
+            if find_model_file(alt + ".safetensors") is not None:
+                model_name = alt + ".safetensors"
+                break
 
     clip_name = choose_flux2_clip_name()
     vae_name = choose_flux2_vae_name()
@@ -159,10 +162,18 @@ def build_flux2_prompt(payload: dict) -> dict:
                 pass
         return name
 
-    vae_name = prefer_split_variant(vae_name)
     clip_name = prefer_split_variant(clip_name)
 
-    return {
+    # Anatomy/quality fixer LoRA (Klein concept slider). Strength 2.0 fixes
+    # minor glitches, 3.0 fixes more prominent artifacts. Negative weight
+    # acts like a negative prompt. Disabled if file is absent.
+    lora_name = "klein_anatomy_fixer.safetensors"
+    lora_strength = settings.get("lora_strength", 2.0)
+    use_lora = find_model_file(lora_name) is not None and lora_strength != 0.0
+    if use_lora:
+        lora_name = find_model_file(lora_name).name
+
+    graph = {
         "1": {
             "class_type": "UNETLoader",
             "inputs": {
@@ -184,81 +195,99 @@ def build_flux2_prompt(payload: dict) -> dict:
                 "vae_name": vae_name,
             },
         },
-        "4": {
-            "class_type": "Flux2Scheduler",
-            "inputs": {
-                "steps": steps,
-                "width": width,
-                "height": height,
-            },
-        },
-        "5": {
-            "class_type": "EmptyFlux2LatentImage",
-            "inputs": {
-                "width": width,
-                "height": height,
-                "batch_size": batch_size,
-            },
-        },
-        "6": {
-            "class_type": "RandomNoise",
-            "inputs": {
-                "noise_seed": seed,
-            },
-        },
-        "7": {
-            "class_type": "KSamplerSelect",
-            "inputs": {
-                "sampler_name": sampler_name,
-            },
-        },
-        "8": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {
-                "clip": ["2", 0],
-                "text": prompt_text,
-            },
-        },
-        "9": {
-            "class_type": "FluxGuidance",
-            "inputs": {
-                "conditioning": ["8", 0],
-                "guidance": guidance,
-            },
-        },
-        # BasicGuider converts CONDITIONING -> GUIDER and expects a MODEL input.
-        "13": {
-            "class_type": "BasicGuider",
+    }
+
+    if use_lora:
+        graph["14"] = {
+            "class_type": "LoraLoader",
             "inputs": {
                 "model": ["1", 0],
-                "conditioning": ["9", 0],
+                "clip": ["2", 0],
+                "lora_name": lora_name,
+                "strength_model": lora_strength,
+                "strength_clip": lora_strength,
             },
-        },
-        "10": {
-            "class_type": "SamplerCustomAdvanced",
-            "inputs": {
-                "noise": ["6", 0],
-                "guider": ["13", 0],
-                "sampler": ["7", 0],
-                "sigmas": ["4", 0],
-                "latent_image": ["5", 0],
-            },
-        },
-        "11": {
-            "class_type": "VAEDecode",
-            "inputs": {
-                "samples": ["10", 0],
-                "vae": ["3", 0],
-            },
-        },
-        "12": {
-            "class_type": "SaveImage",
-            "inputs": {
-                "filename_prefix": "flux2",
-                "images": ["11", 0],
-            },
+        }
+        model_ref = ["14", 0]
+        clip_ref = ["14", 1]
+    else:
+        model_ref = ["1", 0]
+        clip_ref = ["2", 0]
+
+    graph["4"] = {
+        "class_type": "Flux2Scheduler",
+        "inputs": {
+            "steps": steps,
+            "width": width,
+            "height": height,
         },
     }
+    graph["5"] = {
+        "class_type": "EmptyFlux2LatentImage",
+        "inputs": {
+            "width": width,
+            "height": height,
+            "batch_size": batch_size,
+        },
+    }
+    graph["6"] = {
+        "class_type": "RandomNoise",
+        "inputs": {
+            "noise_seed": seed,
+        },
+    }
+    graph["7"] = {
+        "class_type": "KSamplerSelect",
+        "inputs": {
+            "sampler_name": sampler_name,
+        },
+    }
+    graph["8"] = {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "clip": clip_ref,
+            "text": prompt_text,
+        },
+    }
+    graph["9"] = {
+        "class_type": "FluxGuidance",
+        "inputs": {
+            "conditioning": ["8", 0],
+            "guidance": guidance,
+        },
+    }
+    graph["13"] = {
+        "class_type": "BasicGuider",
+        "inputs": {
+            "model": model_ref,
+            "conditioning": ["9", 0],
+        },
+    }
+    graph["10"] = {
+        "class_type": "SamplerCustomAdvanced",
+        "inputs": {
+            "noise": ["6", 0],
+            "guider": ["13", 0],
+            "sampler": ["7", 0],
+            "sigmas": ["4", 0],
+            "latent_image": ["5", 0],
+        },
+    }
+    graph["11"] = {
+        "class_type": "VAEDecode",
+        "inputs": {
+            "samples": ["10", 0],
+            "vae": ["3", 0],
+        },
+    }
+    graph["12"] = {
+        "class_type": "SaveImage",
+        "inputs": {
+            "filename_prefix": "flux2",
+            "images": ["11", 0],
+        },
+    }
+    return graph
 
 
 def poll_comfy_job(comfy_url: str, prompt_id: str, timeout: int = 600):

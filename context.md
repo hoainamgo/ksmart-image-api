@@ -23,7 +23,9 @@
 - Public endpoint (Cloudflare Tunnel, fixed domain): `https://api.ksmart.com.es` (named tunnel `api-ksmart-tunnel`; binary at `cloudflared`, account cert at `~/.cloudflared/cert.pem`). All API routes (`/prompt`, `/history`, `/queue`, `/view`, `/ws`) require API key; the GUI page (`/`) is open.
 - API key: required as `X-API-Key` header or `api_key` query param. Default key (env `API_KEY`) = `ksmart_3xS33jgnnArmLawramxsByHnBmgyQ1w4Z96SdkcLf`.
 - Models: present under the workspace (used names/locations):
-   - Diffusion: `models/diffusion_models/flux-2-klein-4b-fp8.safetensors` (or variant `split_files/.../flux2_dev_fp8mixed.safetensors` if present)
+   - Diffusion (default): `models/diffusion_models/flux2_dev_nvfp4.safetensors` (NVFP4, fits T4 16GB, better anatomy than klein). Fallback: `flux2_dev_fp8mixed.safetensors` → `flux-2-klein-4b-fp8.safetensors`.
+   - Text encoder: `models/text_encoders/split_files/text_encoders/qwen_3_4b.safetensors`
+   - VAE: `models/vae/split_files/vae/flux2-vae.safetensors`
    - Text encoder: `models/text_encoders/split_files/text_encoders/qwen_3_4b.safetensors`
    - VAE: `models/vae/split_files/vae/flux2-vae.safetensors`
 - API: `server.py` (FastAPI) exposes endpoints:
