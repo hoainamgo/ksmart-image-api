@@ -1,0 +1,81 @@
+# Models (12GB+) — never commit, download on target machine
+models/
+output/
+outputs/
+__pycache__/
+*.cache
+.cache/
+
+# Logs
+*.log
+api_server.log
+comfy_launch.log
+worker.log
+server.log
+server_launch.log
+server_restart.log
+tunnel.log
+cloudflared.log
+worker.log
+
+# Cloudflare tunnel binary (download per-platform)
+cloudflared
+cloudflared.log
+
+# Job queue state (runtime only)
+jobs/*.processing
+jobs/*.done
+jobs/*.error
+jobs/*.done.stuck
+
+# Python / env
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+.cursor/
+.windsurf/
+*.swp
+
+# Local secrets / tunnel config
+.cloudflared/
+.env
+
+# Tooling / IDE internal state (don't ship)
+.commandcode/
+.copilot/
+.cursor/
+.cursor-server/
+.windsurf/
+.windsurf-server/
+.vscode-server/
+.lightning_studio/
+.idea/
+.ipython/
+.jupyter/
+.nv/
+.condarc
+.gitconfig
+.hushlogin
+.vimrc
+.wget-hsts
+.zsh_history
+.bash_history
+.zcompdump
+.zshrc
+.bashrc
+.profile
+.sudo_as_admin_successful
+.docker/
+
+# Test artifacts
+result_test.png
+test_result.png
+result*.png
+text.md

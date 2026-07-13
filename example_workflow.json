@@ -1,0 +1,8 @@
+{
+  "type": "flux_workflow",
+  "model": "FLUX.2-klein-4b-fp8",
+  "steps": [
+    {"node": "txt2img", "prompt": "A scenic landscape, sunrise, detailed"}
+  ],
+  "settings": {"width": 768, "height": 768, "batch_size": 1}
+}

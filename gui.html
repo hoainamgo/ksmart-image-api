@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ComfyUI Prompt GUI</title>
+  <style>
+    body { background: #111; color: #eee; font-family: Inter, system-ui, sans-serif; margin: 0; padding: 0; }
+    .page { max-width: 960px; margin: 24px auto; padding: 24px; background: #18181e; border-radius: 18px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35); }
+    h1 { margin-top: 0; }
+    h2 { font-size: 1.1rem; margin: 0 0 10px; color: #cfd8ff; }
+    .field { margin-bottom: 18px; }
+    label { display: block; margin-bottom: 8px; font-weight: 700; color: #cfd8ff; }
+    textarea, input, button { width: 100%; border: 1px solid #333; border-radius: 14px; background: #0f1117; color: #f5f5f5; padding: 14px; font-size: 15px; box-sizing: border-box; }
+    textarea { min-height: 150px; resize: vertical; }
+    button { background: #4f8cff; border: none; color: white; font-weight: 700; cursor: pointer; transition: background .2s ease; }
+    button:hover { background: #3b7ce2; }
+    .status { margin-top: 14px; color: #a8d7ff; font-size: 0.95rem; }
+    .status.error { color: #ff8a8a; }
+    .results, .api-panel { margin-top: 24px; padding: 18px; border-radius: 16px; background: #11141d; border: 1px solid #252735; }
+    .results h2 { margin-top: 0; }
+    .output-list, .api-list { list-style: none; padding-left: 0; margin: 0; }
+    .output-list li, .api-list li { margin-bottom: 12px; padding: 12px; border-radius: 14px; background: #141827; word-break: break-all; }
+    .result-item { display: grid; gap: 8px; }
+    a { color: #8ab4f8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .small { color: #8c98b8; font-size: 0.95rem; }
+    code { color: #c5d4ff; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>ComfyUI Prompt GUI</h1>
+    <p class="small">Enter prompts below, or point this page at any public API URL (Cloudflare tunnel, Lightning.ai, localhost).</p>
+
+    <div class="field">
+      <label for="apiBase">API base URL</label>
+      <input id="apiBase" type="url" placeholder="https://api.ksmart.com.es or http://localhost:8000" />
+      <p class="small">Leave empty to use the current page origin. Saved in this browser.</p>
+    </div>
+
+    <div class="field">
+      <label for="apiKey">API key</label>
+      <input id="apiKey" type="password" placeholder="ksmart_..." />
+      <p class="small">Sent as <code>X-API-Key</code> header. Saved in this browser.</p>
+    </div>
+
+    <div class="api-panel">
+      <h2>API endpoints</h2>
+      <ul class="api-list" id="apiList"></ul>
+    </div>
+
+    <div class="field">
+      <label for="prompt">Single prompt</label>
+      <textarea id="prompt" placeholder="A futuristic cityscape, vivid colors, cinematic lighting"></textarea>
+    </div>
+
+    <div class="field">
+      <label for="batch">Batch prompts (one per line)</label>
+      <textarea id="batch" placeholder="A red dragon flying over mountains\nA cyberpunk street scene at night"></textarea>
+    </div>
+
+    <button id="submitBtn">Submit</button>
+    <div class="status" id="status">Ready to submit.</div>
+
+    <div class="results" id="result" style="display: none;">
+      <h2>Submission result</h2>
+      <div id="resultText"></div>
+      <ul class="output-list" id="outputList"></ul>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE_KEY = 'comfy_gui_api_base';
+    const API_KEY_KEY = 'comfy_gui_api_key';
+    const submitBtn = document.getElementById('submitBtn');
+    const statusEl = document.getElementById('status');
+    const resultEl = document.getElementById('result');
+    const resultText = document.getElementById('resultText');
+    const outputList = document.getElementById('outputList');
+    const apiBaseInput = document.getElementById('apiBase');
+    const apiKeyInput = document.getElementById('apiKey');
+    const apiList = document.getElementById('apiList');
+
+    function getApiKey() {
+      return (apiKeyInput.value || localStorage.getItem(API_KEY_KEY) || '').trim();
+    }
+
+    function apiHeaders(extra = {}) {
+      const headers = Object.assign({}, extra);
+      const key = getApiKey();
+      if (key) headers['X-API-Key'] = key;
+      return headers;
+    }
+
+    function normalizeBase(url) {
+      const trimmed = (url || '').trim().replace(/\/+$/, '');
+      if (!trimmed) {
+        if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+          return window.location.origin;
+        }
+        return '';
+      }
+      return trimmed;
+    }
+
+    function getApiBase() {
+      return normalizeBase(apiBaseInput.value || localStorage.getItem(API_BASE_KEY) || '');
+    }
+
+    function apiUrl(path) {
+      const base = getApiBase();
+      if (!base) {
+        throw new Error('Enter an API base URL (e.g. https://your-tunnel.trycloudflare.com)');
+      }
+      return base + path;
+    }
+
+    function renderApiLinks() {
+      const base = getApiBase();
+      const items = [
+        { method: 'POST', path: '/prompt', note: 'Submit a job' },
+        { method: 'GET', path: '/history/{prompt_id}', note: 'Check job status' },
+        { method: 'GET', path: '/view?filename={filename}', note: 'Download output' },
+        { method: 'GET', path: '/queue', note: 'List queued jobs' },
+      ];
+      apiList.innerHTML = '';
+      if (!base) {
+        const li = document.createElement('li');
+        li.textContent = 'Enter an API base URL above to see full links.';
+        apiList.appendChild(li);
+        return;
+      }
+      items.forEach(item => {
+        const li = document.createElement('li');
+        const href = base + item.path;
+        li.innerHTML = '<strong>' + item.method + '</strong> <a href="' + href + '" target="_blank" rel="noopener"><code>' + href + '</code></a><br/><span class="small">' + item.note + '</span>';
+        apiList.appendChild(li);
+      });
+    }
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.className = isError ? 'status error' : 'status';
+    }
+
+    const POLL_INTERVAL = 2000;
+    const MAX_POLL = 120; // 4 minutes
+
+    function getOutputFilename(result) {
+      if (!result) return null;
+      if (result.file) return result.file;
+      if (result.path) {
+        const parts = result.path.split('/');
+        return parts[parts.length - 1] || result.path;
+      }
+      return null;
+    }
+
+    function renderResults(results) {
+      resultText.textContent = 'Submitted ' + results.length + ' prompt(s) to ' + getApiBase() + '.';
+      outputList.innerHTML = '';
+      results.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'result-item';
+        if (item.job_id.startsWith('error:')) {
+          li.innerHTML = '<strong>Prompt:</strong> ' + item.prompt + '<br/><strong>Error:</strong> ' + item.job_id;
+        } else {
+          const historyUrl = apiUrl('/history/' + item.job_id);
+          li.innerHTML = '<strong>Prompt:</strong> ' + item.prompt + '<br/><strong>Job ID:</strong> <a href="' + historyUrl + '" target="_blank" rel="noopener">' + item.job_id + '</a>' +
+            '<br/><strong>Status:</strong> <span class="job-status">queued</span>' +
+            '<div class="output-links"></div>';
+          li.dataset.jobId = item.job_id;
+        }
+        outputList.appendChild(li);
+      });
+      resultEl.style.display = 'block';
+    }
+
+    async function fetchHistory(jobId) {
+      const resp = await fetch(apiUrl('/history/' + jobId), { headers: apiHeaders() });
+      if (!resp.ok) {
+        throw new Error('Failed to fetch history for ' + jobId + ' (' + resp.status + ')');
+      }
+      return resp.json();
+    }
+
+    function updateJobItem(li, job) {
+      const statusSpan = li.querySelector('.job-status');
+      if (statusSpan) {
+        statusSpan.textContent = job.status || 'unknown';
+      }
+      const outputDiv = li.querySelector('.output-links');
+      if (!outputDiv) return;
+      outputDiv.innerHTML = '';
+      if (job.result) {
+        const filename = getOutputFilename(job.result);
+        if (filename) {
+          const viewUrl = apiUrl('/view?filename=' + encodeURIComponent(filename));
+          const downloadUrl = viewUrl;
+          outputDiv.innerHTML = '<strong>Output:</strong> <a href="' + viewUrl + '" target="_blank" rel="noopener">View</a> | <a href="' + downloadUrl + '" target="_blank" rel="noopener">Download</a> <span class="small">(' + filename + ')</span>';
+          return;
+        }
+        if (job.result.status) {
+          const text = job.result.status === 'dummy_generated'
+            ? 'generated dummy output (check outputs/ folder)' 
+            : 'result status: ' + job.result.status;
+          outputDiv.innerHTML = '<strong>Result:</strong> ' + text;
+          return;
+        }
+        outputDiv.innerHTML = '<strong>Result:</strong> available, but no output file name found.';
+      }
+    }
+
+    async function pollJob(jobId, li, attempt = 0) {
+      try {
+        const job = await fetchHistory(jobId);
+        updateJobItem(li, job);
+        if (job.status && job.status !== 'finished' && job.status !== 'failed' && attempt < MAX_POLL) {
+          setTimeout(() => pollJob(jobId, li, attempt + 1), POLL_INTERVAL);
+        } else if (job.status === 'finished') {
+          setStatus('Job ' + jobId + ' finished.', false);
+        } else if (job.status === 'failed') {
+          setStatus('Job ' + jobId + ' failed.', true);
+        } else if (attempt >= MAX_POLL) {
+          setStatus('Timed out waiting for job ' + jobId + '.', true);
+        }
+      } catch (err) {
+        const statusSpan = li.querySelector('.job-status');
+        if (statusSpan) {
+          statusSpan.textContent = 'error';
+        }
+        setStatus('Error polling job ' + jobId + ': ' + err.message, true);
+      }
+    }
+
+    async function postPrompt(body) {
+      const resp = await fetch(apiUrl('/prompt'), {
+        method: 'POST',
+        headers: apiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error('HTTP ' + resp.status + ': ' + text);
+      }
+      return resp.json();
+    }
+
+    const savedBase = localStorage.getItem(API_BASE_KEY);
+    if (savedBase) {
+      apiBaseInput.value = savedBase;
+    } else if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+      apiBaseInput.placeholder = window.location.origin;
+    }
+    const savedKey = localStorage.getItem(API_KEY_KEY);
+    if (savedKey) {
+      apiKeyInput.value = savedKey;
+    }
+    renderApiLinks();
+
+    apiBaseInput.addEventListener('input', () => {
+      localStorage.setItem(API_BASE_KEY, apiBaseInput.value.trim());
+      renderApiLinks();
+    });
+
+    apiKeyInput.addEventListener('input', () => {
+      localStorage.setItem(API_KEY_KEY, apiKeyInput.value.trim());
+    });
+
+    submitBtn.addEventListener('click', async () => {
+      const promptValue = document.getElementById('prompt').value.trim();
+      const batchValue = document.getElementById('batch').value.trim();
+      resultEl.style.display = 'none';
+      setStatus('Submitting…', false);
+
+      if (!getApiBase()) {
+        setStatus('Please enter an API base URL.', true);
+        return;
+      }
+
+      if (!promptValue && !batchValue) {
+        setStatus('Please enter a prompt or batch prompts.', true);
+        return;
+      }
+
+      const prompts = [];
+      if (promptValue) prompts.push(promptValue);
+      if (batchValue) {
+        batchValue.split('\n').map(p => p.trim()).filter(Boolean).forEach(p => prompts.push(p));
+      }
+
+      const submissions = [];
+      for (const prompt of prompts) {
+        try {
+          const body = { client_id: 'gui', prompt: { prompt } };
+          const data = await postPrompt(body);
+          submissions.push({ prompt, job_id: data.prompt_id });
+        } catch (err) {
+          submissions.push({ prompt, job_id: 'error: ' + err.message });
+        }
+      }
+
+      renderResults(submissions);
+      setStatus('Submission complete. Polling job status…', false);
+      const jobItems = document.querySelectorAll('[data-job-id]');
+      jobItems.forEach(li => {
+        const jobId = li.dataset.jobId;
+        if (jobId) {
+          pollJob(jobId, li);
+        }
+      });
+    });
+  </script>
+</body>
+</html>
